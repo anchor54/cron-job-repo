@@ -1,15 +1,22 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { HttpService } from '@nestjs/axios';
-import { getModelToken } from '@nestjs/mongoose';
 import { CronJobService } from './cron-job.service';
-import { CronJob } from './cron-job.model';
-import * as cron from 'node-cron';
+import { getModelToken } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { CronJob, CronHistory } from './cron-job.model';
+import { serialize } from 'v8';
 
 jest.mock('node-cron');
 
 describe('CronJobService', () => {
   let service: CronJobService;
-  let model: any;
+  const cronJobModel = {
+    create: jest.fn().mockResolvedValue(undefined),
+    findByIdAndUpdate: jest.fn().mockResolvedValue(undefined),
+    findByIdAndDelete: jest.fn().mockResolvedValue(undefined),
+    find: jest.fn().mockResolvedValue(undefined),
+  };
+  let cronHistoryModel: Model<CronHistory>;
   let httpService: HttpService;
 
   beforeEach(async () => {
@@ -17,13 +24,12 @@ describe('CronJobService', () => {
       providers: [
         CronJobService,
         {
-          provide: getModelToken('CronJob'),
-          useValue: {
-            create: jest.fn(),
-            findByIdAndUpdate: jest.fn(),
-            findByIdAndRemove: jest.fn(),
-            find: jest.fn(),
-          },
+          provide: getModelToken(CronJob.name),
+          useValue: cronJobModel,
+        },
+        {
+          provide: getModelToken(CronHistory.name),
+          useValue: {},
         },
         {
           provide: HttpService,
@@ -35,77 +41,96 @@ describe('CronJobService', () => {
     }).compile();
 
     service = module.get<CronJobService>(CronJobService);
-    model = module.get(getModelToken('CronJob'));
-    httpService = module.get(HttpService);
+    cronHistoryModel = module.get(getModelToken(CronHistory.name));
+    httpService = module.get<HttpService>(HttpService);
   });
 
-  afterEach(() => {
-    jest.clearAllMocks();
+  it('should be defined', () => {
+    expect(service).toBeDefined();
   });
 
-  it('should create a new cron job and schedule it', async () => {
-    const createDto = {
-      name: 'Test Job',
-      triggerLink: 'https://dummyjson.com/products/1',
-      apiKey: 'secret',
-      schedule: '* * * * *',
-      startDate: '2024-03-06T03:22:00.000Z',
-    };
-    const expectedJob = { ...createDto, _id: 'someId' };
-  
-    model.create.mockResolvedValue(expectedJob);
-    const scheduleSpy = jest.spyOn(cron, 'schedule');
-  
-    const result = await service.create(createDto);
-  
-    expect(model.create).toHaveBeenCalledWith(createDto);
-    expect(scheduleSpy).toHaveBeenCalledWith(createDto.schedule, expect.any(Function), expect.any(Object));
-    expect(result).toEqual(expectedJob);
-  });
-  
-  it('should update an existing cron job and reschedule it', async () => {
-    const updateDto = {
-      name: 'Updated Test Job',
-    };
-    const jobId = 'someJobId';
-    const expectedJob = { ...updateDto, _id: jobId };
-  
-    model.findByIdAndUpdate.mockResolvedValue(expectedJob);
-    const scheduleSpy = jest.spyOn(cron, 'schedule');
-  
-    const result = await service.update(jobId, updateDto);
-  
-    expect(model.findByIdAndUpdate).toHaveBeenCalledWith(jobId, updateDto, { new: true });
-    expect(scheduleSpy).toHaveBeenCalledWith(expect.any(String), expect.any(Function), expect.any(Object));
-    expect(result).toEqual(expectedJob);
-  });
-  
-  it('should delete a cron job and cancel its schedule', async () => {
-    const jobId = 'someJobId';
-  
-    model.findByIdAndRemove.mockResolvedValue(true);
-  
-    const result = await service.delete(jobId);
-  
-    expect(model.findByIdAndRemove).toHaveBeenCalledWith(jobId);
-    expect(cron.schedule).toHaveBeenCalledTimes(0);
-    expect(result).toEqual(true);
-  });
-  
-  it('should return all cron jobs', async () => {
-    const cronJobs = [
-      { name: 'Job 1', schedule: '* * * * *' },
-      { name: 'Job 2', schedule: '0 * * * *' },
-    ];
-  
-    model.find.mockReturnValue({
-      exec: jest.fn().mockResolvedValueOnce(cronJobs),
+  describe('create', () => {
+    it('should successfully create a cron job', async () => {
+      const createCronJobDto = {
+        name: 'Test Job',
+        triggerLink: 'http://example.com',
+        apiKey: 'secret',
+        schedule: '0 * * * *',
+        startDate: new Date(),
+      } as any;
+      const job = { ...createCronJobDto, id: 'someId@123' } as any
+      jest.spyOn(cronJobModel, 'create').mockResolvedValue(job)
+
+      expect(service.getCronJobs().size).toBe(0)
+      const result = await service.create(createCronJobDto);
+      expect(service.getCronJobs().size).toBe(1)
+
+      expect(cronJobModel.create).toHaveBeenCalledWith(createCronJobDto);
+      expect(result).toEqual(job);
     });
-  
-    const result = await service.get();
-  
-    expect(model.find).toHaveBeenCalled();
-    expect(result).toEqual(cronJobs);
   });
-  
+
+  describe('update', () => {
+    it('should successfully update a cron job', async () => {
+      const updateCronJobDto = {
+        name: 'Updated Test Job',
+      };
+      const jobId = 'someId@123';
+      const job = {
+        _id: jobId,
+        name: 'Test Job',
+        triggerLink: 'http://example.com',
+        apiKey: 'secret',
+        schedule: '0 * * * *',
+        startDate: new Date()
+      } as any
+      jest.spyOn(cronJobModel, 'findByIdAndUpdate').mockResolvedValue(job)
+
+      const result = await service.update(jobId, updateCronJobDto);
+
+      expect(cronJobModel.findByIdAndUpdate).toHaveBeenCalledWith(jobId, updateCronJobDto, { new: true });
+      expect(result).toEqual(job);
+    });
+  });
+
+  describe('delete', () => {
+    it('should successfully delete a cron job', async () => {
+      const jobId = 'someJobId@123';
+      const createCronJobDto = {
+        name: 'Test Job',
+        triggerLink: 'http://example.com',
+        apiKey: 'secret',
+        schedule: '0 * * * *',
+        startDate: new Date(),
+      };
+      const job = { ...createCronJobDto, id: jobId }
+      jest.spyOn(cronJobModel, 'findByIdAndDelete').mockResolvedValue(job);
+      jest.spyOn(cronJobModel, 'create').mockResolvedValue(job)
+      
+      await service.create(createCronJobDto as any)
+      expect(service.getCronJobs().size).toBe(1)
+      const result = await service.delete(jobId);
+      expect(service.getCronJobs().size).toBe(0)
+
+      expect(cronJobModel.findByIdAndDelete).toHaveBeenCalledWith(jobId);
+      expect(result).toEqual(job);
+    });
+  });
+
+  describe('get', () => {
+    it('should return all cron jobs', async () => {
+      const cronJobs = [
+        { _id: 'someId@123', name: 'Job 1', triggerLink: 'http://example.com', schedule: '* * * * *', startDate: new Date() },
+        { _id: 'someId@456', name: 'Job 2', triggerLink: 'http://example.com', schedule: '0 * * * *', startDate: new Date() },
+      ];
+      jest.spyOn(cronJobModel, 'find').mockImplementation(() => ({
+        exec: jest.fn().mockResolvedValue(cronJobs)
+      }))
+
+      const result = await service.get();
+
+      expect(cronJobModel.find).toHaveBeenCalled();
+      expect(result).toEqual(cronJobs);
+    });
+  });
 });

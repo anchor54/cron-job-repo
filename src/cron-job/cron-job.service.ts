@@ -19,8 +19,7 @@ export class CronJobService {
   ) {}
 
   async create(createCronJobDto: CreateCronJobDto) {
-    const createdCronJob = new this.cronJobModel(createCronJobDto);
-    const cronJobModel = await createdCronJob.save();
+    const cronJobModel = await this.cronJobModel.create(createCronJobDto);
 
     let cronSchedule = "0 0 0 0 0 0";
     const startDate = new Date(createCronJobDto.startDate)
@@ -58,14 +57,16 @@ export class CronJobService {
     const job = this.cronJobs.get(id)
     const link = updateCronJobDto.triggerLink ?? updatedJobModel.triggerLink
     const schedule = updateCronJobDto.schedule ?? updatedJobModel.schedule
-    const delay = updateCronJobDto.startDate ? Math.max(0, new Date(updateCronJobDto.startDate).getTime() - Date.now()) : job.options.delay
+    const delay = updateCronJobDto.startDate ?
+      Math.max(0, new Date(updateCronJobDto.startDate).getTime() - Date.now()) :
+      (job?.options?.delay ?? 0)
     this.scheduleCronJob(id, link, schedule, delay)
-    job.task.destroy()
+    job?.task?.destroy()
     return updatedJobModel;
   }
 
   async delete(id: string) {
-    this.cronJobs.get(id).task.destroy()
+    this.cronJobs.get(id)?.destroy()
     this.cronJobs.delete(id)
     return await this.cronJobModel.findByIdAndDelete(id);
   }
@@ -80,7 +81,6 @@ export class CronJobService {
       async () => {
         try {
           const response = await lastValueFrom(this.httpService.get(triggerLink));
-          const cronJob = await this.cronJobModel.findById(id);
           const cronHistory = new this.cronHistoryModel({ cronId: id, response: JSON.stringify(response.data) });
           await cronHistory.save()
         } catch (error) {
@@ -94,5 +94,9 @@ export class CronJobService {
       }
     );
     this.cronJobs.set(id, job)
+  }
+
+  getCronJobs() {
+    return this.cronJobs
   }
 }
